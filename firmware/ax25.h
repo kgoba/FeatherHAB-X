@@ -8,10 +8,6 @@ struct s_address {
 	uint8_t ssid;
 };
 
-// Private
-void update_crc(uint8_t a_bit);
-void send_byte(uint8_t a_byte);
-
 // Public
 void ax25_send_byte(uint8_t a_byte);
 void ax25_send_flag(void);

@@ -1,16 +1,28 @@
-#ifndef AFSK_H
-#define AFSK_H
+#ifndef _AFSK_H_INCLUDED_
+#define _AFSK_H_INCLUDED_
 
-void afsk_init(void);
-void afsk_send(const uint8_t *buffer, uint16_t len);
-void afsk_start(void);
+#include <stdint.h>
+
+
+/** Configures the hardware resources for AFSK (timer, GPIO, interrupts).
+ */
+void afsk_setup(void);
+
+
+/** Starts to transmit a message bit by bit asynchronously. 
+ * Message length is indicated in bits.
+ */
+void afsk_send(uint8_t *message, uint16_t lengthInBits);
+
+
+/** Stops any ongoing transmission immediately. 
+ */
+void afsk_stop(void);
+
+
+/** Checks whether a transmission is ongoing. Returns nonzero if so. 
+ */
 uint8_t afsk_busy(void);
 
-void afsk_ptt_on(void);
-void afsk_ptt_off(void);
-void afsk_output_sample(uint8_t s);
-uint8_t afsk_request_cwoff(void);
-void afsk_timer_stop(void);
-void afsk_timer_start(void);
 
 #endif

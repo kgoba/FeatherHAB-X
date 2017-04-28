@@ -1,41 +1,42 @@
-##
-## This file is part of the libopencm3 project.
-##
-## Copyright (C) 2009 Uwe Hermann <uwe@hermann-uwe.de>
-##
-## This library is free software: you can redistribute it and/or modify
-## it under the terms of the GNU Lesser General Public License as published by
-## the Free Software Foundation, either version 3 of the License, or
-## (at your option) any later version.
-##
-## This library is distributed in the hope that it will be useful,
-## but WITHOUT ANY WARRANTY; without even the implied warranty of
-## MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-## GNU Lesser General Public License for more details.
-##
-## You should have received a copy of the GNU Lesser General Public License
-## along with this library.  If not, see <http://www.gnu.org/licenses/>.
-##
+# Project name
+TARGET			= feather2
 
-BINARY = feather
+# Set up device parameters
+include stm32f030.mk
+LDSCRIPT        = stm32f030x8.ld
 
-DFU_ADDRESS = 0x08002000
-LDSCRIPT = feather.ld 
+# Define project files and settings
+SRC             = $(wildcard *.c)
+OBJS            = $(SRC:%.c=%.o)
+INCLUDE         = 
+DEFINES			= 
 
-# append currdir to includes?
-INCLUDE=-I$(CURDIR)
-CFLAGS+= $(INCLUDE)
+# Location of libopencm3
+OPENCM3_DIR     = ../libopencm3
 
-# Project Source Files
-SRC+=afsk.c
-SRC+=si446x.c
-SRC+=delay.c
-SRC+=ax25.c
-SRC+=aprs.c
-SRC+=gps.c
-SRC+=usart.c
-SRC+=sleep.c
-SRC+=adc.c
+DEFINES			+= -D$(FAMILY)
+INCLUDE         += -I$(OPENCM3_DIR)/include/
+CFLAGS          += -Os -ggdb3 -ffunction-sections -fdata-sections
+CXXFLAGS        += -Os -ggdb3 -fno-rtti -ffunction-sections -fdata-sections
+CPPFLAGS        += -MD $(INCLUDE) $(DEFINES)
+LDFLAGS         += -static -nostartfiles -fno-rtti
+LDFLAGS			+= -Wl,--start-group -Wl,--end-group -Wl,--gc-sections
+LDFLAGS			+= -lgcc -lc --specs=nosys.specs
+LDLIBS          += -L$(OPENCM3_DIR)/lib
+LDLIBS          += -l$(OPENCM3_LIB)
 
 
-include Makefile.include
+include $(OPENCM3_DIR)/mk/gcc-config.mk
+
+.PHONY: clean all
+
+all: $(TARGET).elf $(TARGET).bin
+	$(Q)arm-none-eabi-size $(TARGET).elf
+
+clean:
+	$(Q)$(RM) -rf $(TARGET).elf $(TARGET).bin $(OBJS)
+
+flash:
+	$(Q)st-flash --reset write $(TARGET).bin 0x8000000
+
+include $(OPENCM3_DIR)/mk/gcc-rules.mk

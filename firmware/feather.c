@@ -20,9 +20,10 @@
  *
  */
 
+#include <libopencm3/stm32/timer.h>
+#include <libopencm3/stm32/flash.h>
 #include <libopencm3/stm32/gpio.h>
 #include <libopencm3/stm32/rcc.h>
-#include <libopencm3/stm32/timer.h>
 #include <libopencm3/stm32/pwr.h>
 
 #include "config.h"
@@ -34,51 +35,69 @@
 #include "delay.h"
 #include "sleep.h"
 #include "si446x.h"
+#include "radio.h"
 
-static void clockdisable(void)
+void clock_setup(void)
+{
+    rcc_osc_on(RCC_HSI);
+    rcc_wait_for_osc_ready(RCC_HSI);
+    rcc_set_sysclk_source(RCC_HSI);
+
+    rcc_set_hpre(RCC_CFGR_HPRE_NODIV);
+    rcc_set_ppre(RCC_CFGR_PPRE_NODIV);
+
+    /* 8MHz / 2 * 6 = 24MHz */
+    rcc_set_pll_source(RCC_CFGR_PLLSRC_HSI_CLK_DIV2);
+    rcc_set_pll_multiplication_factor(RCC_CFGR_PLLMUL_MUL6);
+
+    rcc_osc_on(RCC_PLL);
+    rcc_wait_for_osc_ready(RCC_PLL);
+    rcc_set_sysclk_source(RCC_PLL);
+
+    flash_set_ws(FLASH_ACR_LATENCY_000_024MHZ);
+
+    rcc_apb1_frequency = 24000000;
+    rcc_ahb_frequency = 24000000;
+}
+
+
+static void disableClocks(void)
 {
     // Enable clocks 
     rcc_periph_clock_disable(RCC_GPIOB);
     rcc_periph_clock_disable(RCC_GPIOA);
-//    rcc_periph_clock_enable(RCC_GPIOF);
-    rcc_periph_clock_disable(RCC_TIM1);
+    rcc_periph_clock_disable(RCC_TIM14);
     rcc_periph_clock_disable(RCC_SPI1);
  
 }
-static void clockenable(void)
+static void enableClocks(void)
 {
-    rcc_clock_setup_in_hsi_out_16mhz(); // may want to slow down for power
+    //rcc_clock_setup_in_hsi_out_16mhz(); // may want to slow down for power
+    //rcc_clock_setup_in_hsi_out_24mhz();
+
     // Enable clocks 
     rcc_periph_clock_enable(RCC_GPIOB);
     rcc_periph_clock_enable(RCC_GPIOA);
-//    rcc_periph_clock_enable(RCC_GPIOF);
-    rcc_periph_clock_enable(RCC_TIM1);
-    rcc_periph_clock_enable(RCC_SPI1);
- 
+    rcc_periph_clock_enable(RCC_TIM14);
+    rcc_periph_clock_enable(RCC_SPI1); 
 }
 
 int main(void)
 {
-    // Init clocks
+    clock_setup();
+    
+    enableClocks();
 
-    clockenable();
+    systick_setup();
 
     rtc_init();
     sleep_init();
-    
-
     adc_init();
-
-    gpio_mode_setup(GPIOB, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO7);
-
-    systick_setup(1000);
+    gps_init();
+    usart_init();
 
     si446x_setup();
-
-    gps_init();
-
-    afsk_init();
-    usart_init();
+    afsk_setup();
 
     // Main loop
     uint32_t last_aprs = APRS_TRANSMIT_PERIOD;
@@ -101,11 +120,13 @@ int main(void)
             last_gps = get_millis_elapsed();
         }
 
+        /*
         if(afsk_request_cwoff())
         {
             si446x_cw_off();
             si446x_shutdown();
         }
+        */
 
 //        pwr_set_stop_mode();
         sleep_now();

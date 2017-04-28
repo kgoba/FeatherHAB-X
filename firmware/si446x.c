@@ -17,169 +17,138 @@
  * along with FeatherHAB. If not, see <http://www.gnu.org/licenses/>.
  * 
  * Ethan Zonca
+ * Karlis Goba
  *
  */
-
-#include <libopencm3/stm32/spi.h>
-#include <libopencm3/stm32/rcc.h>
-
+ 
 #include "si446x.h"
-#include "config.h"
-#include "delay.h"
 
+#include <stdio.h>
 
-void si446x_setup(void)
+void delay(uint32_t millis);
+void si446x_wakeup();
+void si446x_shutdown();
+void si446x_select();
+void si446x_release();
+uint8_t si446x_xfer(uint8_t out);
+
+static uint32_t si446x_VCOXFrequency;
+
+static uint8_t si446x_setNCOModulo(uint8_t osr);
+
+uint8_t si446x_waitForCTS()
 {
-    // Init clocks
-    rcc_periph_clock_enable(RCC_GPIOA);
-    rcc_periph_clock_enable(RCC_GPIOB);
-    rcc_periph_clock_enable(RCC_SPI1);
-    // Init GPIO for CS/MOSI/MISO/CLK
-    gpio_mode_setup(SI446x_CS_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, SI446x_CS_PIN);
-    gpio_set_output_options(SI446x_CS_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, SI446x_CS_PIN);
-    gpio_set(SI446x_CS);
+    int reply = 0x00;
+    int nTry = 20;
 
-    gpio_mode_setup(SI446x_SHDN_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, SI446x_SHDN_PIN);
-    gpio_set_output_options(SI446x_SHDN_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, SI446x_SHDN_PIN);
-    gpio_clear(SI446x_SHDN);
+    // Wait for CTS
+    while (nTry > 0) {       
+        si446x_select();
 
-    gpio_mode_setup(SI446x_MOSI_PORT, GPIO_MODE_AF, GPIO_PUPD_NONE, SI446x_MOSI_PIN);
-    gpio_set_output_options(SI446x_MOSI_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, SI446x_MOSI_PIN);
-    gpio_set_af(SI446x_MOSI_PORT, SI446x_MOSI_AF, SI446x_MOSI_PIN);
+        si446x_xfer(0x44);        
+        reply = si446x_xfer(0xFF);
 
-    gpio_mode_setup(SI446x_MISO_PORT, GPIO_MODE_AF, GPIO_PUPD_NONE, SI446x_MISO_PIN);
-    gpio_set_output_options(SI446x_MISO_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, SI446x_MISO_PIN);
-    gpio_set_af(SI446x_MISO_PORT, SI446x_MISO_AF, SI446x_MISO_PIN);
+        if (reply == 0xFF) break;
 
-    gpio_mode_setup(SI446x_SCK_PORT, GPIO_MODE_AF, GPIO_PUPD_NONE, SI446x_SCK_PIN);
-    gpio_set_output_options(SI446x_SCK_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, SI446x_SCK_PIN);
-    gpio_set_af(SI446x_SCK_PORT, SI446x_SCK_AF, SI446x_SCK_PIN);
-
-    // Init SPI interface
-    spi_init_master(SI446x_SPI, SPI_CR1_BAUDRATE_FPCLK_DIV_64, SPI_CR1_CPOL_CLK_TO_0_WHEN_IDLE, SPI_CR1_CPHA_CLK_TRANSITION_1, SPI_CR1_CRCL_8BIT, SPI_CR1_MSBFIRST);
-    spi_enable_ss_output(SI446x_SPI);
-    spi_enable(SI446x_SPI);
-    spi_set_crcl_8bit(SPI1);
-
-    // Initialize in shutdown state
-    si446x_shutdown();
-    //delay(20);
+        si446x_release();
+        nTry--;
+    }
+    
+    if (nTry == 0) {
+        LOG("CTS timeout\n");
+        return 1;
+    }    
+    else {
+        LOG("Received CTS\n");
+        return 0;        
+    }
 }
 
-void si446x_prepare(void)
+uint8_t si446x_sendcmd(uint8_t tx_len, const uint8_t* txData, uint8_t rx_len, uint8_t *rxData)
 {
-    si446x_wakeup();
+    int j, k;
+    
+    LOG("Sending ");
+    si446x_select();    
+    for (j = 0; j < tx_len; j++) {
+        uint8_t wordb = txData[j];
+        si446x_xfer(wordb);
+        LOG("%02x ", wordb);
+    } 
+    si446x_release();
+    LOG("\n");
 
-    // Not really sure what this is for
-    const char PART_INFO_command[] = {0x01}; // Part Info
-    si446x_sendcmd(1, 9, PART_INFO_command);
+    if (rx_len == 0) {
+        return 0;
+    }
+    
+    if (0 != si446x_waitForCTS())
+    {
+        si446x_release();
+        return 1;
+    }
 
-    // Divide SI446x_VCXO_FREQ into its bytes; MSB first  
-    uint16_t x3 = SI446x_VCXO_FREQ / 0x1000000;
-    uint16_t x2 = (SI446x_VCXO_FREQ - x3 * 0x1000000) / 0x10000;
-    uint16_t x1 = (SI446x_VCXO_FREQ - x3 * 0x1000000 - x2 * 0x10000) / 0x100;
-    uint16_t x0 = (SI446x_VCXO_FREQ - x3 * 0x1000000 - x2 * 0x10000 - x1 * 0x100); 
+    if (rx_len > 1) {
+        LOG("Receiving ");
+        for (k = 1; k < rx_len; k++) {
+            uint8_t recv = si446x_xfer(0xFF);
+            if (rxData) rxData[k - 1] = recv;
+            LOG("%02x ", recv);
+        }
+        LOG("\n");
+    }
+    si446x_release();
+
+    return 0;
+}
+
+uint8_t si446x_boot(uint32_t VCOXFrequency) 
+{
+    uint8_t rc = 0;
+    
+    si446x_VCOXFrequency = VCOXFrequency;
+    
+    // Divide si446x_VCOXFrequency into its bytes; MSB first  
+    uint8_t x3 = (uint8_t)(si446x_VCOXFrequency >> 24);
+    uint8_t x2 = (uint8_t)(si446x_VCOXFrequency >> 16);
+    uint8_t x1 = (uint8_t)(si446x_VCOXFrequency >> 8);
+    uint8_t x0 = (uint8_t)(si446x_VCOXFrequency >> 0); 
 
     // Power up radio module
-    // No patch, boot main app. img, FREQ_VCXO, return 1 byte
-    const char init_command[] = {0x02, 0x01, 0x01, x3, x2, x1, x0};
-    si446x_sendcmd(7, 1 ,init_command); 
-
+    // No patch, boot main app. img, TCXO, return 1 byte
+    const uint8_t init_command[] = {0x02, 0x01, 0x01, x3, x2, x1, x0};
+    rc = si446x_sendcmd(7, init_command, 1, NULL);
+    if (rc) return rc;
+        
     // Radio ready: clear all pending interrupts and get the interrupt status back
-    const char get_int_status_command[] = {0x20, 0x00, 0x00, 0x00}; 
-    si446x_sendcmd(4, 9, get_int_status_command);
-
-    // GPIO config: Set all GPIOs LOW; Link NIRQ to CTS; Link SDO to MISO; Max drive strength
-                                        // cmd    gp0   gp1   gp2   gp3  nirq  sdo   gencfg
-    const char gpio_pin_cfg_command[] = {0x13, 0x02, 0x04, 0x02, 0x02, 0x08, 0x11, 0x00}; 
-    si446x_sendcmd(8, 8, gpio_pin_cfg_command);
-
-    si446x_setfreq(SI446x_FREQUENCY);
-
-    // Set to 2FSK direct mode
-                            //        set prop   group     numprops  startprop   data
-    char set_modem_mod_type_command[] = {0x11,     0x20,     0x01,     0x00,       0xAA}; 
-    si446x_sendcmd(5, 1, set_modem_mod_type_command);
-    /* 7: 1 = direct mode (asynch)
-       6: 0 = >| choose gpio1 as data source
-       5: 1 = >| choose gpio1 as data source
-       4: 0 = >> | mod source is direct
-       3: 1 = >> | mod source is direct
-       2: 0 = >|
-       1: 1 = >| 2fsk modulation (0x2
-       0: 0 = >|
-    */
-  
-
-    si446x_setpower(0x7F);
-
-    // Set data rate (unsure if this actually affects direct modulation)
-                         //        set prop   group     numprops  startprop   data
-    char set_data_rate_command[] = {0x11,     0x20,     0x03,     0x03,       0x01, 0x09, 0x00}; //set data rate to 2.3kbps or so
-    si446x_sendcmd(7, 1, set_data_rate_command);
-
-    // Tune tx 
-    char change_state_command[] = {0x34, 0x05}; //  Change to TX tune state
-    si446x_sendcmd(2, 1, change_state_command);
-
+    const uint8_t get_int_status_command[] = {0x20, 0x00, 0x00, 0x00}; 
+    rc = si446x_sendcmd(4, get_int_status_command, 9, NULL);
+    if (rc) return rc;
+        
+    return rc;
 }
 
-
-void si446x_sendcmd(uint8_t tx_len, uint8_t rx_len, const char* data)
+uint8_t si446x_setupGPIO(uint8_t gpio0, uint8_t gpio1, uint8_t gpio2, uint8_t gpio3, uint8_t nirq, uint8_t sdo, uint8_t genConfig) 
 {
-    // extra byte to get rid of trash? maybe? why?!
-    // see https://github.com/Si4463Project/RadioCode/blob/master/Source/drv_Si4463.c
-    if (tx_len == 1)
-        tx_len++;
-    
-    gpio_clear(SI446x_CS);
-    
-    uint8_t j;
-    for (j = 0; j < tx_len; j++) // Loop through the bytes of the pData
-    {
-      uint8_t wordb = data[j];
-      spi_send8(SI446x_SPI, wordb);
-      delay(1);
-    } 
-    
-    gpio_set(SI446x_CS);
-
-    //_delay_us(20);
-    delay(1); // TODO: Fixme
-
-    gpio_clear(SI446x_CS);
-
-    int reply = 0x00;
-    while (reply != 0xFF)
-    {       
-       //reply = SPI.transfer(0x44);
-        spi_send8(SI446x_SPI, 0x44);
-        reply = spi_read8(SI446x_SPI);
-        if (reply != 0xFF)
-        {
-         gpio_set(SI446x_CS);
-         delay(1); // FIXME _delay_us(20);
-         gpio_clear(SI446x_CS);
-         delay(1); // FIXME _delay_us(20);
-        }
-    }
-
-    uint8_t k;
-    for (k = 1; k < rx_len; k++)
-    {
-      spi_send8(SI446x_SPI, 0x44);
-    }
-       
-    gpio_set(SI446x_CS);
-
-    // Wait half a second to prevent Serial buffer overflow
-    delay(10); 
-
+    const uint8_t gpio_pin_cfg_command[] = { 0x13, gpio0, gpio1, gpio2, gpio3, nirq, sdo, genConfig }; 
+    return si446x_sendcmd(8, gpio_pin_cfg_command, 8, NULL);
 }
 
-
-void si446x_setfreq(uint32_t frequency)
+uint8_t si446x_setupGPIO0(uint8_t gpio0) 
 {
+    uint8_t unmod = EZR_GPIO_MODE_UNMODIFIED;
+    return si446x_setupGPIO(gpio0, unmod, unmod, unmod, unmod, unmod, 0); 
+}
+
+uint8_t si446x_setupGPIO1(uint8_t gpio1) 
+{
+    uint8_t unmod = EZR_GPIO_MODE_UNMODIFIED;
+    return si446x_setupGPIO(unmod, gpio1, unmod, unmod, unmod, unmod, 0); 
+}
+
+uint8_t si446x_setFrequency(uint32_t frequency, uint32_t deviation)
+{
+    uint8_t rc = 0;
     // Set the output divider according to recommended ranges given in si446x datasheet  
     int outdiv = 4;
     int band = 0;
@@ -189,7 +158,7 @@ void si446x_setfreq(uint32_t frequency)
     if (frequency < 239000000UL) { outdiv = 16; band = 4;};
     if (frequency < 177000000UL) { outdiv = 24; band = 5;};
 
-    unsigned long f_pfd = 2 * SI446x_VCXO_FREQ / outdiv;
+    unsigned long f_pfd = 2 * si446x_VCOXFrequency / outdiv;
 
     unsigned int n = ((unsigned int)(frequency / f_pfd)) - 1;
 
@@ -200,8 +169,9 @@ void si446x_setfreq(uint32_t frequency)
 
     // Set the band parameter
     unsigned int sy_sel = 8;  
-    char set_band_property_command[] = {0x11, 0x20, 0x01, 0x51, (band + sy_sel)};
-    si446x_sendcmd(5, 1, set_band_property_command);
+    uint8_t set_band_property_command[] = {0x11, 0x20, 0x01, 0x51, (band + sy_sel)};
+    rc = si446x_sendcmd(5, set_band_property_command, 1, NULL);
+    if (rc) return rc;
 
     // Set the pll parameters
     unsigned int m2 = m / 0x10000;
@@ -209,55 +179,98 @@ void si446x_setfreq(uint32_t frequency)
     unsigned int m0 = (m - m2 * 0x10000 - m1 * 0x100); 
 
     // Assemble parameter string
-    char set_frequency_property_command[] = {0x11, 0x40, 0x04, 0x00, n, m2, m1, m0};
-    si446x_sendcmd(8, 1, set_frequency_property_command);
+    uint8_t set_frequency_property_command[] = {0x11, 0x40, 0x04, 0x00, n, m2, m1, m0};
+    rc = si446x_sendcmd(8, set_frequency_property_command, 1, NULL);
+    if (rc) return rc;
 
     // Set frequency deviation
     // ...empirically 0xF9 looks like about 5khz. Sketchy.
-    char set_frequency_separation[] = {0x11, 0x20, 0x03, 0x0a, 0x00, 0x03, 0x00}; 
-    si446x_sendcmd(7, 1, set_frequency_separation);
+    //uint8_t set_frequency_separation[] = {0x11, 0x20, 0x03, 0x0a, 0x00, 0x03, 0x00}; 
+    //rc = si446x_sendcmd(7, 1, set_frequency_separation);
+    
+    uint32_t x = ((uint64_t)(1ul << 18) * outdiv * deviation) / si446x_VCOXFrequency;
+    uint8_t set_frequency_deviation[] = { 
+      0x11, 0x20, 0x03, 0x0A,
+      (uint8_t)(x >> 16),
+      (uint8_t)(x >> 8),
+      (uint8_t)(x >> 0)
+    };
+    rc = si446x_sendcmd(7, set_frequency_deviation, 1, NULL);
+    
+    /* Needed for data rate to function correctly */
+    if (!rc) rc = si446x_setNCOModulo(0);
 
+    return rc;
 }
 
-void si446x_setpower(uint8_t powerlevel)
+uint8_t si446x_setPower(uint8_t powerlevel)
 {
-    if(powerlevel > 0x7f)
+    if (powerlevel > 0x7f)
         powerlevel = 0x7f;
-    char set_power_level_command[] = {0x11, 0x22, 0x01, 0x01, powerlevel};
-    si446x_sendcmd(5, 1, set_power_level_command);
+    uint8_t set_power_level_command[] = {0x11, 0x22, 0x01, 0x01, powerlevel};
+    return si446x_sendcmd(5, set_power_level_command, 1, NULL);
 }
 
+uint8_t si446x_setModulation(uint8_t modulation)
+{
+    uint8_t set_modem_mod_type_command[] = {0x11,     0x20,     0x01,     0x00,       modulation}; 
+    return si446x_sendcmd(5, set_modem_mod_type_command, 1, NULL);
+}
 
-// Turn on transmitter
-void si446x_cw_on(void)
+uint8_t si446x_setDataRate(uint32_t rate) 
+{
+    uint8_t x2 = (uint8_t)(rate >> 16);
+    uint8_t x1 = (uint8_t)(rate >> 8);
+    uint8_t x0 = (uint8_t)(rate >> 0);
+    uint8_t set_data_rate_command[] = {0x11, 0x20, 0x03, 0x03, x2, x1, x0};
+    return si446x_sendcmd(7, set_data_rate_command, 1, NULL);
+}
+
+static uint8_t si446x_setNCOModulo(uint8_t osr) 
+{
+    uint32_t ncoFreq;
+    switch (osr) {
+        case 0: 
+            ncoFreq = si446x_VCOXFrequency / 10; break;
+  //  case kModulo20: ncoFreq = si446x_VCOXFrequency / 20; break;
+  //  case kModulo40: ncoFreq = si446x_VCOXFrequency / 40; break;  
+        default:
+            return -1;
+    }
+    uint8_t set_nco_modulo_command[] = { 
+        0x11, 0x20, 0x04, 0x06,
+        (uint8_t)(ncoFreq >> 24) & 0x03 | (uint8_t)(osr << 2),
+        (uint8_t)(ncoFreq >> 16),
+        (uint8_t)(ncoFreq >> 8),
+        (uint8_t)(ncoFreq),
+    };
+
+    return si446x_sendcmd(8, set_nco_modulo_command, 1, NULL);
+}
+
+uint8_t si446x_getPartID(uint8_t *outPartID)
+{
+    uint8_t cmd[] = {0x01};
+    return si446x_sendcmd(1, cmd, 9, outPartID);
+}
+
+uint8_t si446x_tune()
+{
+    // Tune tx 
+    uint8_t change_state_command[] = {0x34, 0x05};
+    return si446x_sendcmd(2, change_state_command, 1, NULL);
+}
+
+uint8_t si446x_txOn(void)
 { 
     // Change to TX state
-    char change_state_command[] = {0x34, 0x07};
-    si446x_sendcmd(2, 1, change_state_command);
-    
-    // Wait for TX to warm up
-    delay(10);
-    
+    uint8_t change_state_command[] = {0x34, 0x07};
+    return si446x_sendcmd(2, change_state_command, 1, NULL);
 }
 
-
-// Turn off transmitter (note: called from AFSK ISR)
-void si446x_cw_off(void)
+uint8_t si446x_txOff(void)
 {
     // Change to ready state
-    char change_state_command[] = {0x34, 0x03}; 
-    si446x_sendcmd(2, 1, change_state_command);
+    uint8_t change_state_command[] = {0x34, 0x03}; 
+    return si446x_sendcmd(2, change_state_command, 1, NULL);
 }
- 
-void si446x_shutdown(void)
-{
-    gpio_set(SI446x_SHDN);
-}
-
-void si446x_wakeup(void)
-{
-    gpio_clear(SI446x_SHDN);
-}
-
-
-// vim:softtabstop=4 shiftwidth=4 expandtab 

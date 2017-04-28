@@ -30,20 +30,24 @@ static uint8_t ones_in_a_row;
 static uint8_t packet[MAX_PACKET_LEN];
 static unsigned int packet_size;
 
+// Private
+static void update_crc(uint8_t a_bit);
+static void send_byte(uint8_t a_byte);
+
 // Module functions
-void update_crc(uint8_t a_bit)
+static void update_crc(uint8_t a_bit)
 {
 	crc ^= a_bit;
 	if (crc & 1)
-	crc = (crc >> 1) ^ 0x8408;  // X-modem CRC poly
+        crc = (crc >> 1) ^ 0x8408;  // X-modem CRC poly
 	else
-	crc = crc >> 1;
+        crc = crc >> 1;
 }
 
-void send_byte(uint8_t a_byte)
+static void send_byte(uint8_t a_byte)
 {
-	uint8_t i = 0;
-	while (i++ < 8) 
+	uint8_t i;
+	for (i = 0; i < 8; i++)
 	{
 		uint8_t a_bit = a_byte & 1;
 		a_byte >>= 1;
@@ -52,14 +56,14 @@ void send_byte(uint8_t a_byte)
 		{
 			// Next bit is a '1'
 			if (packet_size >= MAX_PACKET_LEN * 8)  // Prevent buffer overrun
-			return;
+                return;
 			packet[packet_size >> 3] |= (1 << (packet_size & 7));
 			packet_size++;
 			if (++ones_in_a_row < 5) continue;
 		}
 		// Next bit is a '0' or a zero padding after 5 ones in a row
 		if (packet_size >= MAX_PACKET_LEN * 8)    // Prevent buffer overrun
-		return;
+            return;
 		packet[packet_size >> 3] &= ~(1 << (packet_size & 7));
 		packet_size++;
 		ones_in_a_row = 0;
@@ -80,11 +84,11 @@ void ax25_send_flag()
 	for (i = 0; i < 8; i++, packet_size++) 
 	{
 		if (packet_size >= MAX_PACKET_LEN * 8)  // Prevent buffer overrun
-		return;
+            return;
 		if ((flag >> i) & 1)
-		packet[packet_size >> 3] |= (1 << (packet_size & 7));
+            packet[packet_size >> 3] |= (1 << (packet_size & 7));
 		else
-		packet[packet_size >> 3] &= ~(1 << (packet_size & 7));
+            packet[packet_size >> 3] &= ~(1 << (packet_size & 7));
 	}
 }
 
@@ -114,15 +118,15 @@ void ax25_send_header(const struct s_address *addresses, uint16_t num_addresses)
 	{
 		// Transmit callsign
 		for (j = 0; addresses[i].callsign[j]; j++)
-		send_byte(addresses[i].callsign[j] << 1);
+            send_byte(addresses[i].callsign[j] << 1);
 		// Transmit pad
 		for ( ; j < 6; j++)
-		send_byte(' ' << 1);
+            send_byte(' ' << 1);
 		// Transmit SSID. Termination signaled with last bit = 1
 		if (i == num_addresses - 1)
-		send_byte(('0' + addresses[i].ssid) << 1 | 1);
+            send_byte(('0' + addresses[i].ssid) << 1 | 1);
 		else
-		send_byte(('0' + addresses[i].ssid) << 1);
+            send_byte(('0' + addresses[i].ssid) << 1);
 	}
 	
 	// Control field: 3 = APRS-UI frame
@@ -150,7 +154,6 @@ void ax25_flush_frame()
 {
 	// Key the transmitter and send the frame
 	afsk_send(packet, packet_size);
-	afsk_start();
 }
 
 // vim:softtabstop=4 shiftwidth=4 expandtab 

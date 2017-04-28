@@ -49,8 +49,8 @@ void rtc_init(void)
     rcc_periph_clock_enable(RCC_RTC);
 
     // Fire up the low-speed oscillator
-    rcc_osc_on(LSI);
-    rcc_wait_for_osc_ready(LSI);
+    rcc_osc_on(RCC_LSI);
+    rcc_wait_for_osc_ready(RCC_LSI);
 
     pwr_disable_backup_domain_write_protect();
     rtc_unlock();

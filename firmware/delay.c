@@ -17,6 +17,7 @@
  * along with FeatherHAB. If not, see <http://www.gnu.org/licenses/>.
  * 
  * Ethan Zonca
+ * Karlis Goba
  *
  */
 
@@ -26,11 +27,13 @@
 
 #include "delay.h"
 
-void systick_setup(int freq)
+#define SYSTICK_HZ      1000
+
+void systick_setup(void)
 {
-    systick_set_reload(rcc_ahb_frequency / freq);
+    systick_set_reload(rcc_ahb_frequency / SYSTICK_HZ);
     systick_set_clocksource(STK_CSR_CLKSOURCE_AHB);
-    STK_CVR = 0;
+    //STK_CVR = 0;
     systick_interrupt_enable();
     systick_counter_enable();
 }
@@ -40,7 +43,10 @@ volatile uint32_t system_millis;
 void delay(uint32_t delay)
 {
     uint32_t wake = system_millis + delay;
-    while (wake > system_millis);
+    while (wake > system_millis)
+    {
+        // do nothing
+    }
 }
 
 void sys_tick_handler(void)

@@ -17,228 +17,208 @@
  * along with FeatherHAB. If not, see <http://www.gnu.org/licenses/>.
  * 
  * Ethan Zonca
+ * Karlis Goba
  *
  */
+ 
+/** @file
+ * 
+ * Implements AFSK used by AX.25 on VHF (1200 baud) by PWM modulating 
+ * a pin which controls frequency deviation. 
+ * 
+ * Mark frequency: 1200 Hz, space frequency: 2200 Hz.
+ * 
+ * LSB first.
+ * 
+ * NRZ(S) encoding, where  logical 0 bit is marked by a change of state, 
+ * and a logical 1 bit is marked by no change of state.
+ */
 
-#include <libopencm3/stm32/gpio.h>
-#include <libopencm3/cm3/nvic.h>
-#include <libopencm3/cm3/systick.h>
 #include <libopencm3/stm32/rcc.h>
+#include <libopencm3/stm32/gpio.h>
 #include <libopencm3/stm32/timer.h>
+#include <libopencm3/cm3/nvic.h>
 
 #include "afsk.h"
-#include "si446x.h"
-#include "config.h"
-#include "delay.h"
+
+#define RCC_MOD     RCC_GPIOB
+#define PORT_MOD    GPIOB
+#define PIN_MOD     GPIO1
+#define AF_MOD      GPIO_AF0
+
+#define RCC_PWM     RCC_TIM14
+#define TIM_PWM     TIM14
+#define IRQ_PWM     NVIC_TIM14_IRQ
+
+#define SYMBOL_RATE 1200        /**< AFSK symbol rate (baud) */
+#define FREQ_MARK   1200        /**< AFSK mark tone frequency (Hz) */
+#define FREQ_SPACE  2200        /**< AFSK space tone frequency (Hz) */
+
+/** Defines AFSK oversampling in PWM cycles per symbol. Should be at least
+ * 10 (?) to ensure good sinewave approximation by PWM.
+ * 
+ * SAMPLES_PER_SYMBOL * PWM_PRESCALER * PWM_PERIOD * SYMBOL_RATE should
+ * equal to the frequency of timer source (normally APB clock). 
+ */
+#define SAMPLES_PER_SYMBOL  32
+
+#define PWM_PRESCALER       5
+#define PWM_PERIOD          125
+
+#define WAVETABLE_SIZE      256
+
+/** Number of fractional bits for phase computation */
+#define FRAC                6
+
+/* Compute useful constants */
+#define PHASE_MAX           ((uint32_t)WAVETABLE_SIZE << FRAC)
+#define PHASE_DELTA_MARK    ((uint32_t)PHASE_MAX * FREQ_MARK / SYMBOL_RATE / SAMPLES_PER_SYMBOL)
+#define PHASE_DELTA_SPACE   ((uint32_t)PHASE_MAX * FREQ_SPACE / SYMBOL_RATE / SAMPLES_PER_SYMBOL) 
+
+/** PWM values between 0 and 124 inclusive corresponding to a period of sine wave */
+static const uint8_t waveTable[WAVETABLE_SIZE] = {
+    62, 64, 65, 67, 68, 70, 71, 73, 74, 76, 77, 79, 80, 81, 83, 84, 86, 87, 89, 90, 91, 93, 94, 95, 
+    96, 98, 99, 100, 101, 102, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 114, 115, 116, 
+    117, 117, 118, 119, 119, 120, 120, 121, 121, 122, 122, 122, 123, 123, 123, 124, 124, 124, 124, 
+    124, 124, 124, 124, 124, 124, 124, 123, 123, 123, 122, 122, 122, 121, 121, 120, 120, 119, 119, 
+    118, 117, 117, 116, 115, 114, 114, 113, 112, 111, 110, 109, 108, 107, 106, 105, 104, 102, 101, 
+    100, 99, 98, 96, 95, 94, 93, 91, 90, 89, 87, 86, 84, 83, 81, 80, 79, 77, 76, 74, 73, 71, 70, 68, 
+    67, 65, 64, 62, 60, 59, 57, 56, 54, 53, 51, 50, 48, 47, 45, 44, 43, 41, 40, 38, 37, 35, 34, 33, 
+    31, 30, 29, 28, 26, 25, 24, 23, 22, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 10, 9, 8, 7, 7, 
+    6, 5, 5, 4, 4, 3, 3, 2, 2, 2, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 
+    4, 4, 5, 5, 6, 7, 7, 8, 9, 10, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 25, 26, 
+    28, 29, 30, 31, 33, 34, 35, 37, 38, 40, 41, 43, 44, 45, 47, 48, 50, 51, 53, 54, 56, 57, 59, 60
+};
+
+static volatile uint8_t *txBuffer;
+static volatile uint8_t  txBitMask;
+static volatile uint16_t txBitsToSend;
+static volatile uint16_t txSampleInSymbol;
+static volatile uint32_t txPhase;
+static volatile uint32_t txPhaseDelta;
 
 
-const uint8_t afsk_sine_table[512] = 
-{127, 129, 130, 132, 133, 135, 136, 138, 139, 141, 143, 144, 146, 147, 149, 150, 152, 153, 155, 156, 158, 159, 161, 162, 164, 165, 167, 168, 170, 171, 173, 174, 176, 177, 178, 180, 181, 183, 184, 185, 187, 188, 190, 191, 192, 194, 195, 196, 198, 199, 200, 201, 203, 204, 205, 206, 208, 209, 210, 211, 212, 213, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 233, 234, 235, 236, 237, 238, 238, 239, 240, 240, 241, 242, 242, 243, 244, 244, 245, 245, 246, 247, 247, 248, 248, 249, 249, 249, 250, 250, 251, 251, 251, 252, 252, 252, 252, 253, 253, 253, 253, 253, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 253, 253, 253, 253, 253, 252, 252, 252, 252, 251, 251, 251, 250, 250, 249, 249, 249, 248, 248, 247, 247, 246, 245, 245, 244, 244, 243, 242, 242, 241, 240, 240, 239, 238, 238, 237, 236, 235, 234, 233, 233, 232, 231, 230, 229, 228, 227, 226, 225, 224, 223, 222, 221, 220, 219, 218, 217, 216, 215, 213, 212, 211, 210, 209, 208, 206, 205, 204, 203, 201, 200, 199, 198, 196, 195, 194, 192, 191, 190, 188, 187, 185, 184, 183, 181, 180, 178, 177, 176, 174, 173, 171, 170, 168, 167, 165, 164, 162, 161, 159, 158, 156, 155, 153, 152, 150, 149, 147, 146, 144, 143, 141, 139, 138, 136, 135, 133, 132, 130, 129, 127, 125, 124, 122, 121, 119, 118, 116, 115, 113, 111, 110, 108, 107, 105, 104, 102, 101, 99, 98, 96, 95, 93, 92, 90, 89, 87, 86, 84, 83, 81, 80, 78, 77, 76, 74, 73, 71, 70, 69, 67, 66, 64, 63, 62, 60, 59, 58, 56, 55, 54, 53, 51, 50, 49, 48, 46, 45, 44, 43, 42, 41, 39, 38, 37, 36, 35, 34, 33, 32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 21, 20, 19, 18, 17, 16, 16, 15, 14, 14, 13, 12, 12, 11, 10, 10, 9, 9, 8, 7, 7, 6, 6, 5, 5, 5, 4, 4, 3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 4, 4, 5, 5, 5, 6, 6, 7, 7, 8, 9, 9, 10, 10, 11, 12, 12, 13, 14, 14, 15, 16, 16, 17, 18, 19, 20, 21, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 41, 42, 43, 44, 45, 46, 48, 49, 50, 51, 53, 54, 55, 56, 58, 59, 60, 62, 63, 64, 66, 67, 69, 70, 71, 73, 74, 76, 77, 78, 80, 81, 83, 84, 86, 87, 89, 90, 92, 93, 95, 96, 98, 99, 101, 102, 104, 105, 107, 108, 110, 111, 113, 115, 116, 118, 119, 121, 122, 124, 125 };
-
-const uint16_t TABLE_SIZE = sizeof(afsk_sine_table);
-
-static inline uint8_t afsk_read_sample(uint16_t phase)
+void afsk_send(uint8_t *message, uint16_t lengthInBits)
 {
-    return afsk_sine_table[phase];
+    txBuffer = message;
+    txBitsToSend = lengthInBits;
+
+    txPhase = 0;
+    txPhaseDelta = PHASE_DELTA_MARK;
+
+    txBitMask = 1;  /* LSB first */
+    txSampleInSymbol = 0;
+    
+    timer_enable_oc_output(TIM_PWM, TIM_OC1);
+    timer_enable_counter(TIM_PWM);
 }
 
 
-// constants
-//#define MODEM_CLOCK_RATE F_CPU
-//#define PLAYBACK_RATE MODEM_CLOCK_RATE / 256  // Fast PWM
-
-#define BAUD_RATE 1200
-//#define SAMPLES_PER_BAUD PLAYBACK_RATE / BAUD_RATE // = 156
-//#define SAMPLES_PER_BAUD 36
-
-// factor of 4 for the 4x clcokdiv on the counter (maybe kill that)
-//#define SAMPLES_PER_BAUD 156 / 4 
-#define SAMPLES_PER_BAUD 156 / 2 / 3
-
-
-// phase offset of 830 gives ~1900 Hz
-// phase offset of 1550 gives ~2200 Hz
-//#define PHASE_DELTA_1200 1800
-//#define PHASE_DELTA_2200 2200
-//#define PHASE_DELTA_1200 8000
-//#define PHASE_DELTA_2200 10000 
-
-#define PHASE_DELTA_1200 830 * 3 //1800
-#define PHASE_DELTA_2200 1550*3  //1550 * 6
-
-
-// Module globals
-volatile unsigned char current_byte;
-volatile uint8_t current_sample_in_baud;    // 1 bit = SAMPLES_PER_BAUD samples
-volatile uint16_t phase = 10;
-volatile uint16_t phasedelta = 3300;
-
-volatile uint8_t request_cwoff = 0;
-volatile uint8_t go = 0;                 
-
-volatile uint32_t packet_pos;                 // Next bit to be sent out
-
-volatile uint32_t afsk_packet_size = 10;
-volatile const uint8_t *afsk_packet;
-
-
-#define PRESCALE_1200 155 * 6
-#define PRESCALE_2200 84 * 6
-
-////////////////////////////////////////////////
-void afsk_init(void) 
+void afsk_stop()
 {
-    // Init gpio of pin
-    gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO10); //pa10 radio gp1 
-    gpio_set_output_options(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH,  GPIO10);
-    gpio_set_af(GPIOA, GPIO_AF2, GPIO10);
+    timer_disable_counter(TIM_PWM);
+    timer_disable_oc_output(TIM_PWM, TIM_OC1);
+}
+
+
+uint8_t afsk_busy()
+{
+    return (txBitsToSend > 0);
+}
+
+
+void afsk_setup()
+{
+    txBitsToSend = 0;
+
+    /* Configure modulation pin (GPIO1 on SI446x) */
+    rcc_periph_clock_enable(RCC_MOD);
+
+    /* Setup pin for TIM14_CH1 function */
+    gpio_mode_setup(PORT_MOD, GPIO_MODE_AF, GPIO_PUPD_NONE, PIN_MOD);
+    gpio_set_output_options(PORT_MOD, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, PIN_MOD);
+    gpio_set_af(PORT_MOD, AF_MOD, PIN_MOD);
 
     // Reset and configure timer
-    timer_reset(TIM1);
-    //TIM_CR1_CKD_CK_INT_MUL_4
-    timer_set_mode(TIM1, TIM_CR1_CKD_CK_INT, TIM_CR1_CMS_EDGE, //TIM_CR1_CMS_CENTER_1,
-                       TIM_CR1_DIR_UP);
-    timer_set_prescaler(TIM1, 1); // 155 is 1200hz, 84 is 2200hz
+    rcc_periph_clock_enable(RCC_PWM);
+    timer_reset(TIM_PWM);
+    timer_set_mode(TIM_PWM, TIM_CR1_CKD_CK_INT, TIM_CR1_CMS_EDGE, TIM_CR1_DIR_UP);
+    timer_set_prescaler(TIM_PWM, PWM_PRESCALER - 1);
+    timer_set_period(TIM_PWM, PWM_PERIOD - 1);
+    timer_enable_break_main_output(TIM_PWM);
 
+    timer_set_oc_mode(TIM_PWM, TIM_OC1, TIM_OCM_PWM1);
+    timer_set_oc_value(TIM_PWM, TIM_OC1, PWM_PERIOD / 2);
 
-    timer_set_oc_mode(TIM1, TIM_OC3, TIM_OCM_PWM1);
-    timer_enable_oc_output(TIM1, TIM_OC3);
-    timer_enable_break_main_output(TIM1);
-    timer_set_oc_value(TIM1, TIM_OC3, 300);
-    timer_set_period(TIM1, 255); // should this be 256? FIXME
-    timer_enable_counter(TIM1);
-
-    // Enable interrupt for timer capture/compare
-    timer_enable_irq(TIM1, TIM_DIER_CC3IE);
-
-    while(afsk_busy());
+    /* Enables the timer update interrupt, which is called every PWM cycle */
+    timer_enable_irq(TIM_PWM, TIM_DIER_UIE);
+    nvic_enable_irq(IRQ_PWM);
 }
 
 
-void afsk_output_sample(uint8_t s)
+void afsk_shutdown()
 {
-    timer_set_oc_value(TIM1, TIM_OC3, s);
+    timer_disable_irq(TIM_PWM, TIM_DIER_UIE);
+    nvic_disable_irq(IRQ_PWM);
+
+    rcc_periph_clock_disable(RCC_MOD);
+    rcc_periph_clock_disable(RCC_PWM);
 }
 
-uint8_t afsk_request_cwoff(void)
+
+void afsk_low()
 {
-    if(request_cwoff)
+    gpio_clear(PORT_MOD, PIN_MOD);
+}
+
+
+void afsk_high()
+{
+    gpio_set(PORT_MOD, PIN_MOD);
+}
+
+
+/** Interrupt Service Routine. Performs AFSK output modulation.
+ */
+void tim14_isr(void)
+{
+    if (timer_get_flag(TIM_PWM, TIM_SR_UIF)) 
     {
-        request_cwoff = 0;
-        return 1;
-    }
-    else
-    {
-        return 0;
-    }
-}
+        timer_clear_flag(TIM_PWM, TIM_SR_UIF);
 
-volatile uint32_t freqctr = 0;
-void tim1_cc_isr(void)
-{
-    if (timer_get_flag(TIM1, TIM_SR_CC3IF)) {
+        /* We get here 19200 times per second or 16 times per symbol */
+        if (txBitsToSend == 0) {
+            afsk_stop();
+            return;
+        }
 
-	if (go) {
-            if (packet_pos == afsk_packet_size) 
-            {
-                    request_cwoff = 1;
-                    gpio_toggle(GPIOB, GPIO7);
-                    go = 0;         // End of transmission
-                    afsk_timer_stop();  // Disable modem
-                    return; // done
-            }
-
-            // If sent SAMPLES_PER_BAUD already, go to the next bit
-            if (current_sample_in_baud == 0)  // Load up next bit
-            {   
-                    if ((packet_pos & 7) == 0) // Load up next byte
-                    {          
-                            current_byte = afsk_packet[packet_pos >> 3];
-                    }				
-                    else 
-                    {
-                            current_byte = current_byte / 2;  // ">>1" forces int conversion
-                    }			
-                    if ((current_byte & 1) == 0) 
-                    {
-                            // Toggle tone (1200 <> 2200)
-                            phasedelta ^= (PHASE_DELTA_1200 ^ PHASE_DELTA_2200);
-                    }
-            }
-    
-            phase += phasedelta;
-            uint8_t s = afsk_read_sample((phase >> 7) & (TABLE_SIZE - 1));
-
-            afsk_output_sample(s); //real afsk
-
-            if(++current_sample_in_baud == SAMPLES_PER_BAUD) 
-            {
-                    current_sample_in_baud = 0;
-                    packet_pos++;
+        if (txSampleInSymbol == 0) {
+            /* Load new symbol (bit) to transmit */
+            if (0 == (*txBuffer & txBitMask)) {
+                /* Logical 0 - toggle the AFSK frequency */
+                txPhaseDelta ^= (PHASE_DELTA_MARK ^ PHASE_DELTA_SPACE);
             }
             
-	}
+            /* Update bit extraction mask */
+            if (txBitMask == 0x80) {
+                /* Whole byte was processed, move to the next one */
+                txBitMask = 1;
+                txBuffer++;
+            } else {
+                /* LSB first */
+                txBitMask <<= 1;
+            }
 
-        timer_clear_flag(TIM1, TIM_SR_CC3IF);
+            txBitsToSend--;
+        }
+
+        txSampleInSymbol++;
+        if (txSampleInSymbol >= SAMPLES_PER_SYMBOL) {
+            txSampleInSymbol = 0;
+        }
+
+        /* Update PWM amount and increment phase */
+        timer_set_oc_value(TIM_PWM, TIM_OC1, waveTable[txPhase >> FRAC]);
+        txPhase = (txPhase + txPhaseDelta) % PHASE_MAX;
     }
-
-
 }
-
-
-void afsk_timer_start()
-{
-    // Clear the overflow flag, so that the interrupt doesn't go off
-    // immediately and overrun the next one (p.163).
-    // Enable interrupt when TCNT2 reaches TOP (0xFF) (p.151, 163)
-    nvic_enable_irq(NVIC_TIM1_CC_IRQ);
-    timer_enable_counter(TIM1);
-}
-
-void afsk_timer_stop()
-{
-	// Resting duty cycle
-	// Output 0v (could be 255/2, which is 0v after coupling... doesn't really matter)
-	//OCR2A = 0x80;
-
-	// Disable playback interrupt
-	//TIMSK2 &= ~_BV(TOIE2);
-    nvic_disable_irq(NVIC_TIM1_CC_IRQ);
-    timer_disable_counter(TIM1);
-}
-
-
-// External
-
-void afsk_start(void)
-{
-	phasedelta = PHASE_DELTA_1200;
-	phase = 0;
-	packet_pos = 0;
-	current_sample_in_baud = 0;
-	go = 1;
-
-    // Wake up and configure radio
-    si446x_prepare();
-    delay(10);
-
-	// Key the radio
-	si446x_cw_on();
-
-	// Start transmission
-	afsk_timer_start();
-}
-
-uint8_t afsk_busy(void)
-{
-	return go;
-}
-
-void afsk_send(const uint8_t *buffer, uint16_t len)
-{
-	afsk_packet_size = len;
-	afsk_packet = buffer;
-}
-
-
-// vim:softtabstop=4 shiftwidth=4 expandtab 
