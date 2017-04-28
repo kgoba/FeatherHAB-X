@@ -184,10 +184,6 @@ uint8_t si446x_setFrequency(uint32_t frequency, uint32_t deviation)
     if (rc) return rc;
 
     // Set frequency deviation
-    // ...empirically 0xF9 looks like about 5khz. Sketchy.
-    //uint8_t set_frequency_separation[] = {0x11, 0x20, 0x03, 0x0a, 0x00, 0x03, 0x00}; 
-    //rc = si446x_sendcmd(7, 1, set_frequency_separation);
-    
     uint32_t x = ((uint64_t)(1ul << 18) * outdiv * deviation) / si446x_VCOXFrequency;
     uint8_t set_frequency_deviation[] = { 
       0x11, 0x20, 0x03, 0x0A,

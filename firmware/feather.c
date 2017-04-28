@@ -37,6 +37,10 @@
 #include "si446x.h"
 #include "radio.h"
 
+/* Set up system clock for lower frequency (24 MHz instead of the default 48 MHz).
+ * This is a separate function now as helper functions for underclocked rates 
+ * have been removed from libopencm3.
+ */
 void clock_setup(void)
 {
     rcc_osc_on(RCC_HSI);
@@ -60,22 +64,19 @@ void clock_setup(void)
     rcc_ahb_frequency = 24000000;
 }
 
-
 static void disableClocks(void)
 {
-    // Enable clocks 
+    // Disable all peripheral clocks 
     rcc_periph_clock_disable(RCC_GPIOB);
     rcc_periph_clock_disable(RCC_GPIOA);
     rcc_periph_clock_disable(RCC_TIM14);
     rcc_periph_clock_disable(RCC_SPI1);
  
 }
+
 static void enableClocks(void)
 {
-    //rcc_clock_setup_in_hsi_out_16mhz(); // may want to slow down for power
-    //rcc_clock_setup_in_hsi_out_24mhz();
-
-    // Enable clocks 
+    // Enable all peripheral clocks 
     rcc_periph_clock_enable(RCC_GPIOB);
     rcc_periph_clock_enable(RCC_GPIOA);
     rcc_periph_clock_enable(RCC_TIM14);
