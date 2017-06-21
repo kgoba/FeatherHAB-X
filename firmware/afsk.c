@@ -104,7 +104,7 @@ void afsk_send(uint8_t *message, uint16_t lengthInBits)
     txBitsToSend = lengthInBits;
 
     txPhase = 0;
-    txPhaseDelta = PHASE_DELTA_MARK;
+    txPhaseDelta = PHASE_DELTA_SPACE;
 
     txBitMask = 1;  /* LSB first */
     txSampleInSymbol = 0;

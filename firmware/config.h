@@ -31,7 +31,7 @@
 // --------------------------------------------------------------------------
 
 #define TCXO_FREQ_HZ            26000000ul
-#define TRANSMIT_FREQUENCY_HZ  144850000ul
+#define TRANSMIT_FREQUENCY_HZ  144800000ul
 #define AFSK_DEVIATION_HZ           1500ul
 
 #define SI446x_FREQUENCY 146390000UL
@@ -51,7 +51,7 @@
 // --------------------------------------------------------------------------
 
 // TX delay in milliseconds
-#define TX_DELAY      500
+#define TX_DELAY      200
 
 // Maximum packet delay
 #define MAX_PACKET_LEN 512  // bytes
@@ -68,7 +68,7 @@
 // - Cars:       9
 // - Home:       0
 // - IGate:      5
-#define S_CALLSIGN      "KD8TDF"
+#define S_CALLSIGN      "YL3AJG"
 #define S_CALLSIGN_ID   11
 
 // Destination callsign: APRS (with SSID=0) is usually okay.

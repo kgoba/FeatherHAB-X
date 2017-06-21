@@ -36,6 +36,7 @@
 #include "si446x.h"
 #include "radio.h"
 #include "afsk.h"
+#include "ax25.h"
 
 #include "config.h"
 
@@ -167,7 +168,119 @@ void afskTest()
     }
 }
 
-int test_setup()
+void u16_to_str(uint16_t x, char *result) 
+{
+    uint8_t d;
+    uint8_t skipZero = 1;
+    
+    for (d = '0'; x >= 10000; d++) x -= 10000;
+    if (!skipZero || d != '0') {
+        *result++ = d;
+        skipZero = 0;
+    }
+    for (d = '0'; x >= 1000; d++) x -= 1000;
+    if (!skipZero || d != '0') {
+        *result++ = d;
+        skipZero = 0;
+    }
+    for (d = '0'; x >= 100; d++) x -= 100;
+    if (!skipZero || d != '0') {
+        *result++ = d;
+        skipZero = 0;
+    }
+    for (d = '0'; x >= 10; d++) x -= 10;
+    if (!skipZero || d != '0') {
+        *result++ = d;
+        skipZero = 0;
+    }
+    d = x + '0';
+    *result++ = d;
+    *result = '\0';
+}
+
+void aprsTestSend(uint16_t x)
+{
+    struct s_address addresses[] = { 
+        {"APRS", 0},          // Destination callsign
+        {S_CALLSIGN, S_CALLSIGN_ID},    // Source callsign (-11 = balloon, -9 = car)
+        {"WIDE1", 1}, // Digi1 (first digi in the chain)
+        {"WIDE2", 1} // Digi2 (second digi in the chain)
+    };
+
+    //strncpy(addresses[1].callsign, S_CALLSIGN, 7);
+  
+  	// emz: modified this to get the size of the first address rather than the size of the struct itself, which fails
+    ax25_send_header(addresses, sizeof(addresses)/sizeof(addresses[0]));
+
+    ax25_send_byte('!');             // Data Type Identifier: / = Report w/ timestamp, no APRS messaging
+    
+    // Position report (time/lat/lon/symbol)
+    //ax25_send_string("291019z");        // DHM (Day Hour Minute): 021709z = 2nd day of the month, 17:09 zulu (UTC/GMT)
+    ax25_send_string("5102.56N");       // Latitude: 38deg and 22.20 min (.20 are NOT seconds, but 1/100th of minutes)
+    ax25_send_byte('/');                // Symbol table
+    ax25_send_string("00343.35E");      // Longitude: 000deg and 25.80 min
+    ax25_send_byte('O');                // Symbol: O=balloon, -=QTH
+  
+    // 7-byte data extension field (optional)
+    ax25_send_string("000");            // CSE: course (degrees)
+    ax25_send_byte('/');                // and  
+    ax25_send_string("000");            // SPD: speed (knots)
+  
+    // Comment field
+    ax25_send_string("/A=");            // Altitude (feet). Goes anywhere in the comment area
+    ax25_send_string("000123");
+
+    char intStr[6];
+    u16_to_str(x, intStr);
+
+    ax25_send_string("/T=");
+    ax25_send_string(intStr);           // Temperature
+
+    ax25_send_string("/HAB Propagation Test");
+    //ax25_send_string("/FeatherHab Mission 2");
+    //ax25_send_byte(' ');
+
+    ax25_send_footer();
+    ax25_flush_frame();
+}
+
+void aprsTest() 
+{
+    uint8_t rc = 0;
+    uint8_t modulation = EZR_MOD_TYPE_2FSK | EZR_MOD_SOURCE_DIRECT_MODE | 
+                         EZR_MOD_TX_MODE_ASYNC | EZR_MOD_TX_MODE_GPIO1;
+
+    afsk_setup();    
+    
+    if (!rc) rc = si446x_setFrequency(TRANSMIT_FREQUENCY_HZ, AFSK_DEVIATION_HZ);
+    if (!rc) rc = si446x_setModulation(modulation);
+    if (!rc) rc = si446x_setDataRate(1200*64);
+    if (!rc) rc = si446x_setPower(0x30);
+    if (!rc) rc = si446x_setupGPIO1(EZR_GPIO_MODE_TX_DATA);
+    if (rc) testFail(3);
+
+    si446x_tune();
+    delay(100);
+
+    uint16_t x = 0;
+    while (1) {
+        LED_ON;
+        si446x_txOn();
+        delay(20);
+
+        aprsTestSend(x);
+        while (afsk_busy());
+
+        LED_OFF;
+        delay(20);
+        si446x_txOff();
+        delay(2000);
+
+        x++;
+    }
+}
+
+void test_setup()
 {
     uint8_t rc;
 

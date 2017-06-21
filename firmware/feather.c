@@ -87,6 +87,10 @@ int main(void)
 {
     clock_setup();
     
+    test_setup();
+    //afskTest();
+    aprsTest();
+    
     enableClocks();
 
     systick_setup();
