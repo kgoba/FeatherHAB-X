@@ -4,6 +4,8 @@ Firmware of [FeatherHAB project](http://protofusion.org/wordpress/2015/10/feathe
 
 This can be considered a fork and a derivative work. I will keep modifying the firmware and adding features.
 
+## License
+
 The original licensing terms hold (GNU Affero Public License).
 
 ## Building
